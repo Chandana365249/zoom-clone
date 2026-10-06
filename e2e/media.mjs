@@ -2,6 +2,8 @@
 // fake camera (a moving test pattern) and fake microphone (a beep).
 //
 //   BASE_URL=http://localhost:3000 node media.mjs
+//   FORCE_RELAY=1 ...   only allow TURN-relayed routes (simulates two networks that can't
+//                       connect directly) to prove calls work through the relay.
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
@@ -22,6 +24,16 @@ async function newPage() {
   });
   browsers.push(browser);
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ["camera", "microphone"] });
+  if (process.env.FORCE_RELAY) {
+    await ctx.addInitScript(() => {
+      const Original = window.RTCPeerConnection;
+      window.RTCPeerConnection = class extends Original {
+        constructor(config = {}) {
+          super({ ...config, iceTransportPolicy: "relay" });
+        }
+      };
+    });
+  }
   return ctx.newPage();
 }
 

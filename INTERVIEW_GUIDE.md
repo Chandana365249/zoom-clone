@@ -251,7 +251,12 @@ UI states: every list has **loading** (skeleton rows), **empty** (illustration a
 8. **NAT traversal.**
    - Browsers fetch STUN/TURN servers from `GET /api/ice-servers` (`services/ice.py`).
    - **STUN** only helps a browser learn its public address. Two people on different restrictive networks (mobile carrier vs. campus Wi-Fi) usually can't connect with STUN alone. Testing between two real networks showed exactly that: signaling worked (about 30 messages each way), but no route was ever found.
-   - **TURN** fixes it by relaying the media. Its credentials are secrets, so the backend hands them out. With Cloudflare they're generated per request (24-hour lifetime, cached for an hour), and if Cloudflare is down the endpoint falls back to STUN instead of failing.
+   - **TURN** fixes it by relaying the media. The live app runs its **own coturn relay** (`turn/Dockerfile`) as a second Railway service:
+     - Railway has no public UDP, so browsers reach it with TURN over TCP through Railway's TCP proxy.
+     - Both callers are relayed by the same server, so media goes relay-to-relay inside it.
+     - **Credentials** use coturn's TURN REST scheme. The backend returns `username = "<expiry>:zoom-clone"` and `password = base64(HMAC-SHA1(TURN_SECRET, username))`. coturn recomputes the HMAC, so there's no user database, the secret never leaves the servers, and leaked credentials expire after 24 hours.
+     - **Proof it works:** the media test with `FORCE_RELAY=1` forces `iceTransportPolicy: "relay"` in both browsers, so a direct path is impossible, and calls still pass every check.
+     - Cloudflare TURN and fixed credentials are also supported by the same endpoint; if a provider is unreachable it falls back to STUN.
 
 **How it would grow:**
 - **Signaling** over WebSockets instead of polling, for faster call setup.
@@ -348,7 +353,7 @@ With three people, the third person's calls stayed on "connecting". There were t
 - **Reused SQLite ids.** Delivered signals are deleted, and plain SQLite reuses deleted rowids. A new offer got an id *below* the host's cursor and was silently skipped. `AUTOINCREMENT` fixed it, and a regression test now proves the test fails without the fix.
 
 **Q: How did you test it?**
-- 31 pytest API tests, each against a fresh in-memory SQLite database. That includes 9 for auth (revocation, expiry, ownership, guest joins, a stolen host participant ID being refused) and 4 for signaling, among them a regression test for the reused-rowid bug.
+- 32 pytest API tests, each against a fresh in-memory SQLite database. That includes 9 for auth (revocation, expiry, ownership, guest joins, a stolen host participant ID being refused) and 4 for signaling, among them a regression test for the reused-rowid bug.
 - TypeScript strict mode, ESLint and a production build.
 - An end-to-end script (`e2e/flow.mjs`) that drives a host and a guest in two real Chrome sessions with fake camera and mic. It checks 32 behaviours: sign-in redirect, wrong password, sign-up, the dashboard checklist, host mute reaching guests, remove, end, schedule/edit/delete, invite links, an account-less guest joining, sign-out, and no horizontal overflow at phone and tablet widths.
 - A media test (`e2e/media.mjs`) runs one Chrome per participant, with fake camera and mic. It checks:

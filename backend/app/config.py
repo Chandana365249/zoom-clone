@@ -21,7 +21,9 @@ class Settings:
     # TURN relay for WebRTC (see services/ice.py). Either Cloudflare (short-lived credentials)...
     cloudflare_turn_key_id: str
     cloudflare_turn_api_token: str
-    # ...or any provider's fixed credentials.
+    # ...or our own coturn (TURN_URLS + TURN_SECRET -> short-lived HMAC credentials)
+    # ...or any provider's fixed credentials (TURN_URLS + TURN_USERNAME + TURN_CREDENTIAL).
+    turn_secret: str
     turn_urls: list[str]
     turn_username: str
     turn_credential: str
@@ -39,6 +41,7 @@ def load_settings() -> Settings:
         seed_on_startup=_parse_bool(os.getenv("SEED_ON_STARTUP", "true")),
         cloudflare_turn_key_id=os.getenv("CLOUDFLARE_TURN_KEY_ID", "").strip(),
         cloudflare_turn_api_token=os.getenv("CLOUDFLARE_TURN_API_TOKEN", "").strip(),
+        turn_secret=os.getenv("TURN_SECRET", "").strip(),
         turn_urls=[url.strip() for url in os.getenv("TURN_URLS", "").split(",") if url.strip()],
         turn_username=os.getenv("TURN_USERNAME", "").strip(),
         turn_credential=os.getenv("TURN_CREDENTIAL", "").strip(),

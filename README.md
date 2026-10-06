@@ -56,7 +56,8 @@ Participants see and hear each other through **peer-to-peer WebRTC**:
 - **Network traversal:** browsers get their STUN/TURN servers from `GET /api/ice-servers`.
   - **STUN** (Google, free) works when at least one side can be reached directly.
   - **TURN** relays the media when it can't, which is common across mobile networks, campus Wi-Fi and corporate firewalls.
-  - TURN secrets stay on the server. With Cloudflare TURN (`CLOUDFLARE_TURN_KEY_ID`, `CLOUDFLARE_TURN_API_TOKEN`), the backend generates short-lived credentials and caches them for an hour. Any other provider's fixed credentials also work (`TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`).
+  - **The live app runs its own TURN relay**: coturn (`turn/Dockerfile`) as a second Railway service, reached over TCP through Railway's TCP proxy. The backend issues time-limited credentials (coturn's TURN REST scheme: username = expiry time, password = HMAC-SHA1 with the shared `TURN_SECRET`), so the secret never reaches browsers.
+  - Alternatives supported by the same endpoint: Cloudflare TURN (`CLOUDFLARE_TURN_KEY_ID`, `CLOUDFLARE_TURN_API_TOKEN`; short-lived credentials cached for an hour), or any provider's fixed credentials (`TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`).
 
 Tested with real browser media (Chrome's fake camera and microphone, one Chrome process per participant, `e2e/media.mjs`):
 - Both directions of video and audio
@@ -66,7 +67,8 @@ Tested with real browser media (Chrome's fake camera and microphone, one Chrome 
 
 **Limits:**
 - A mesh suits small meetings (roughly 2–6 people); each person uploads one stream per other participant.
-- Without TURN configured, people on different restrictive networks can't connect. Their tile stays on "connecting…" / "can't connect", while presence and controls keep working. Configure one of the TURN options above to fix it.
+- Relayed media goes over TCP through Railway's proxy. That's reliable, but adds some latency compared with a direct or UDP-relayed path, and it uses the Railway service's bandwidth.
+- Verified relay-only: `FORCE_RELAY=1 node media.mjs` blocks direct routes in both browsers, so all media must go through the TURN server. The full media suite passes against the live site this way.
 
 ---
 
@@ -239,6 +241,7 @@ zoom-clone/
 │       └── lib/               # api.ts client, types, formatting, meeting helpers
 ├── e2e/flow.mjs               # Browser end-to-end check of all features (host + guests)
 ├── e2e/media.mjs              # Checks audio/video really flow between participants (WebRTC)
+├── turn/Dockerfile            # coturn TURN relay (second Railway service)
 ├── backend/Procfile           # Start command used by Railway
 └── frontend/vercel.json       # Pins the Next.js framework preset on Vercel
 ```
@@ -292,7 +295,7 @@ Open http://localhost:3000 and click **Continue with demo account** (or create a
 ## Testing
 
 ```bash
-# Backend: 31 API tests (in-memory SQLite, a fresh DB per test)
+# Backend: 32 API tests (in-memory SQLite, a fresh DB per test)
 cd backend && pytest
 
 # Frontend: type check, lint, production build
@@ -315,6 +318,10 @@ The live app runs on two services that talk over HTTPS:
 ```
 Browser ──▶ Vercel (Next.js frontend) ──fetch──▶ Railway (FastAPI) ──▶ SQLite file on a Railway volume (/data)
            chandana-zoom-clone.vercel.app        api-production-39bb6.up.railway.app
+
+Browser ◀──── WebRTC audio/video ────▶ Browser            (direct when the networks allow it)
+   └──▶ Railway TCP proxy ──▶ coturn TURN relay ◀──┘      (otherwise relayed)
+        tokaido.proxy.rlwy.net:22457
 ```
 
 **Backend + database → Railway.**
@@ -326,6 +333,12 @@ Browser ──▶ Vercel (Next.js frontend) ──fetch──▶ Railway (FastAP
    - `FRONTEND_URL=<vercel url>`
    - `CORS_ORIGINS=<vercel url>`
 4. Deploy with `railway up`, then run `railway domain` to get a public HTTPS URL.
+
+**TURN relay → Railway.**
+1. `railway add --service turn` and set `TURN_SECRET` (a random 64-character hex string).
+2. Deploy with `railway up ../turn --path-as-root --service turn`.
+3. Expose it with `railway tcp-proxy create --port 3478 --service turn`.
+4. On the `api` service, set `TURN_URLS=turn:<proxy-host>:<proxy-port>?transport=tcp` and the same `TURN_SECRET`.
 
 Railway builds with Railpack. It detects Python from `requirements.txt` and `.python-version`, and starts the app using `Procfile` (`uvicorn app.main:app --host 0.0.0.0 --port $PORT`). `.railwayignore` keeps the virtualenv, `.env` and local database out of the upload.
 
@@ -363,7 +376,7 @@ Railway builds with Railpack. It detects Python from `requirements.txt` and `.py
 
 ## Limitations
 
-- Media uses a peer-to-peer mesh with STUN only. That's fine for small meetings, but large meetings need an SFU, and calls across restrictive networks need the TURN relay configured (see Live audio and video).
+- Media uses a peer-to-peer mesh with STUN only. That's fine for small meetings, but large meetings need an SFU, and relayed calls go over TCP via Railway's proxy (some extra latency).
 - Auth is deliberately minimal: no email verification, password reset, sign-in rate limiting or OAuth. The token lives in localStorage, which is simple and works across domains but is readable by any script on the page; an HttpOnly cookie would be safer if the frontend and API shared a domain.
 - Participant sessions (heartbeat, own mute state, leave) are identified by their numeric ID without a separate secret, so a guest could in theory act on another guest's session by guessing it. Host controls are not affected, since they need the host's login.
 - Polling adds up to about 2 seconds of latency for remote changes. Without a heartbeat, presence takes up to 30 seconds to expire.

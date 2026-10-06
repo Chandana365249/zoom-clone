@@ -6,6 +6,9 @@
   frontend. With Cloudflare they are short-lived, generated per request (and cached briefly).
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -40,6 +43,15 @@ def _cloudflare_ice_servers() -> list[dict]:
     return servers if isinstance(servers, list) else [servers]
 
 
+def _shared_secret_credentials() -> dict:
+    """coturn's "TURN REST API" scheme (`use-auth-secret`): the username carries an expiry time
+    and the password is HMAC-SHA1(secret, username). coturn recomputes it, so it never needs a
+    user database, and a leaked credential stops working when it expires."""
+    username = f"{int(time.time()) + CREDENTIAL_TTL_SECONDS}:zoom-clone"
+    digest = hmac.new(settings.turn_secret.encode(), username.encode(), hashlib.sha1).digest()
+    return {"urls": settings.turn_urls, "username": username, "credential": base64.b64encode(digest).decode()}
+
+
 def get_ice_servers() -> list[dict]:
     if settings.cloudflare_turn_key_id and settings.cloudflare_turn_api_token:
         now = time.time()
@@ -52,6 +64,9 @@ def get_ice_servers() -> list[dict]:
         except Exception:  # network/API failure: degrade to STUN rather than break calls
             logger.exception("Could not get TURN credentials from Cloudflare; falling back to STUN")
             return STUN_SERVERS
+
+    if settings.turn_urls and settings.turn_secret:
+        return STUN_SERVERS + [_shared_secret_credentials()]
 
     if settings.turn_urls:
         return STUN_SERVERS + [
