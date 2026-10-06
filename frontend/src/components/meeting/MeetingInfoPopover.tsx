@@ -65,8 +65,8 @@ export function MeetingInfoPopover({ meeting, myName }: { meeting: Meeting; myNa
             </button>
           </div>
           <p className="mt-3 border-t border-room-line pt-3 text-[12px] leading-5 text-room-muted">
-            Presence, mute state and host controls sync live through the server. Audio and video are
-            local previews only in this build — media streaming between participants would need WebRTC.
+            Audio and video travel directly between participants (peer-to-peer WebRTC). Presence, mute
+            state and host controls sync through the server.
           </p>
         </div>
       )}

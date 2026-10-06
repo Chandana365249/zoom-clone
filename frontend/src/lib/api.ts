@@ -9,6 +9,8 @@ import type {
   Participant,
   RoomState,
   ScheduleMeetingInput,
+  Signal,
+  SignalKind,
   User,
 } from "./types";
 
@@ -122,6 +124,12 @@ export const api = {
       () => undefined,
     );
   },
+
+  // WebRTC signaling relay (see hooks/usePeerConnections.ts).
+  sendSignal: (participantId: number, signal: { recipient_id: number; kind: SignalKind; payload: string }) =>
+    post<Signal>(`/api/participants/${participantId}/signals`, signal),
+  fetchSignals: (participantId: number, after: number) =>
+    request<Signal[]>(`/api/participants/${participantId}/signals?after=${after}`),
 
   // Host controls: the acting host's participant id proves they hold the host role.
   endMeeting: (code: string, hostParticipantId: number) =>

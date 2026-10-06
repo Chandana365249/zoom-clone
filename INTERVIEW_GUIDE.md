@@ -10,7 +10,7 @@ This guide explains how this repository is actually built: what each part does, 
 >
 > The meeting room has real camera and mic access, live presence across browsers, and host controls: mute all, mute one person, remove, and end for everyone. Room state syncs through a heartbeat endpoint the client polls every two seconds. That same request keeps you marked as connected and tells your browser if the host muted or removed you.
 >
-> I didn't build peer-to-peer media, because WebRTC needs signaling and TURN/SFU infrastructure I couldn't do reliably in a day. The UI is honest about that, and I can explain exactly how I'd add it."
+> Audio and video are peer-to-peer WebRTC. The browsers exchange offers, answers and ICE candidates through a small signaling relay in the same FastAPI app, and the media then flows directly between them."
 
 ---
 
@@ -220,22 +220,36 @@ UI states: every list has **loading** (skeleton rows), **empty** (illustration a
 
 - **Auth:** email verification, password reset, rate limiting and lockout on sign-in, OAuth (Google/Microsoft), HttpOnly cookies when the frontend and API share a domain, and meeting passcodes or a waiting room. Give each participant session its own secret so guests' sessions can't be acted on by ID alone.
 - **Real-time:** WebSockets (or SSE) for room events, Redis pub/sub so it works across multiple API instances, and Redis TTL keys for presence.
-- **Media:** WebRTC through an SFU (next section).
+- **Media:** an SFU for meetings beyond a handful of people, a hosted TURN relay, and WebSocket signaling (next section).
 - **Data:** PostgreSQL, Alembic migrations, connection pooling, and soft deletes or audit history.
 - **Ops:** rate limiting, structured logging, error tracking (e.g. Sentry), health and readiness checks, CI running pytest, the type check, lint, build and the end-to-end script.
 - **Testing:** component tests (Vitest and Testing Library) for forms and hooks, and the end-to-end script in CI.
 
 ---
 
-## 12. How WebRTC would be added
+## 12. How the WebRTC audio/video works (and how it would grow)
 
-1. **Signaling.** Add a WebSocket endpoint, `/ws/meetings/{code}?participant_id=…`, in FastAPI. It relays SDP offers and answers plus ICE candidates between participants and broadcasts join and leave events. This would also replace the polling.
-2. **Topology.**
-   - **2–4 people:** mesh. Each browser opens an `RTCPeerConnection` to every other browser and adds its local tracks from `useLocalMedia` (already separate audio and video streams).
-   - **More than that:** an **SFU** (LiveKit, mediasoup or Janus). Each client uploads once and the SFU forwards streams, so upload bandwidth doesn't grow with the number of participants.
-3. **NAT traversal.** STUN for discovering public addresses, and a TURN server (e.g. coturn) for restrictive networks.
-4. **UI.** `VideoTile` already accepts a `stream` prop. Remote tiles would receive the remote `MediaStream` from `ontrack` instead of `null`. Mute and video flags would still come from our API (or data channels).
-5. **Host mute** becomes stronger: the SFU can stop forwarding a muted participant's audio, so it doesn't depend only on the client obeying.
+**What's implemented** (`hooks/usePeerConnections.ts`, `services/signaling.py`):
+
+1. **Mesh.** Each pair of participants has one `RTCPeerConnection`; media goes browser to browser.
+2. **Who calls whom.** The participant who joined later (higher participant id) sends the offer. A newcomer calls everyone already present, and two sides never offer at once ("glare").
+3. **Signaling relay.**
+   - Sending: `POST /participants/{id}/signals` with `{recipient_id, kind: offer|answer|ice, payload}`. The server checks both sessions are joined and in the same meeting.
+   - Receiving: the room polls `GET …/signals?after=<cursor>` every 0.7 s. Messages up to the cursor are deleted as acknowledged.
+4. **Ordering matters.**
+   - **Sending:** each client sends its signals one after another (a promise queue), so an ICE candidate can never reach the server before its offer.
+   - **Receiving:** candidates that still arrive early are buffered until the offer is applied.
+   - **IDs:** the table uses SQLite `AUTOINCREMENT`, so message ids never go backwards after deletions. Without it, a new offer could be skipped, and that was a real bug I found while testing with three people.
+5. **Tracks.** Every connection gets an audio and a video transceiver up front (`sendrecv`). Muting disables the mic track; turning the camera off or on swaps it with `sender.replaceTrack`, so there's no renegotiation.
+6. **Rendering.** Remote video goes into the tile's `<video>`. Remote audio plays through a separate hidden `<audio>`, so you still hear people whose camera is off. The green "speaking" border works for remote participants too, by analysing their incoming audio.
+7. **Recovery and cleanup.** If a connection fails, the caller retries after 2 seconds. Connections close when a participant leaves, and all of them close when you leave.
+8. **NAT traversal.** Google STUN by default; a TURN relay can be added through env vars.
+
+**How it would grow:**
+- **Signaling** over WebSockets instead of polling, for faster call setup.
+- **An SFU** (LiveKit, mediasoup) beyond about 6 people: each client uploads once instead of once per participant.
+- **A hosted TURN service** (coturn, Twilio, Cloudflare) for strict networks.
+- **Stronger host mute:** an SFU can stop forwarding a muted participant's audio, so it doesn't depend on the client obeying.
 
 ---
 
@@ -308,7 +322,7 @@ The host is loaded with `joinedload(Meeting.host)`, and `participant_count` is a
 Each join inserts its own participant row, so there's no conflict. The meeting's switch from `scheduled` to `live` is idempotent: both requests set `live`, and `started_at` is only set if it's empty.
 
 **Q: What are the known weaknesses?**
-- No media transport.
+- Media is a peer-to-peer mesh with STUN only: fine for small meetings, but large meetings need an SFU and some networks need TURN.
 - Minimal auth: no email verification, password reset or sign-in rate limiting, and the token sits in localStorage (readable if the page ever had an XSS bug).
 - Guest participant sessions are identified by numeric ID alone (host controls are protected by login, though).
 - Polling latency.
@@ -317,7 +331,20 @@ Each join inserts its own participant row, so there's no conflict. The meeting's
 
 All of these are documented, with the production fix for each.
 
+**Q: How do participants see and hear each other?**
+Peer-to-peer WebRTC. Our server never carries audio or video; it only relays the small signaling messages (SDP offer/answer and ICE candidates) that let two browsers find a direct route. After that, media flows browser to browser.
+
+**Q: What was the hardest bug?**
+With three people, the third person's calls stayed on "connecting". There were two causes:
+- **Out-of-order sends.** Signals were sent as parallel HTTP requests, so ICE candidates could reach the server before their offer. I fixed it with a sequential send queue plus buffering of early candidates.
+- **Reused SQLite ids.** Delivered signals are deleted, and plain SQLite reuses deleted rowids. A new offer got an id *below* the host's cursor and was silently skipped. `AUTOINCREMENT` fixed it, and a regression test now proves the test fails without the fix.
+
 **Q: How did you test it?**
-- 24 pytest API tests, each against a fresh in-memory SQLite database, including 9 for auth (revocation, expiry, ownership, guest joins, a stolen host participant ID being refused).
+- 28 pytest API tests, each against a fresh in-memory SQLite database. That includes 9 for auth (revocation, expiry, ownership, guest joins, a stolen host participant ID being refused) and 4 for signaling, among them a regression test for the reused-rowid bug.
 - TypeScript strict mode, ESLint and a production build.
 - An end-to-end script (`e2e/flow.mjs`) that drives a host and a guest in two real Chrome sessions with fake camera and mic. It checks 32 behaviours: sign-in redirect, wrong password, sign-up, the dashboard checklist, host mute reaching guests, remove, end, schedule/edit/delete, invite links, an account-less guest joining, sign-out, and no horizontal overflow at phone and tablet widths.
+- A media test (`e2e/media.mjs`) runs one Chrome per participant, with fake camera and mic. It checks:
+  - remote video frames arrive and remote audio is audible (measured with the Web Audio API);
+  - muting silences the audio for others;
+  - the camera can go off and back on mid-call;
+  - a third participant receives both other videos.

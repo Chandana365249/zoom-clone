@@ -63,6 +63,15 @@ export interface JoinMeetingResult {
   meeting: Meeting;
 }
 
+export type SignalKind = "offer" | "answer" | "ice";
+
+export interface Signal {
+  id: number;
+  sender_id: number;
+  kind: SignalKind;
+  payload: string; // JSON-encoded RTCSessionDescriptionInit or RTCIceCandidateInit
+}
+
 export interface RoomState {
   me: Participant;
   meeting: Meeting;

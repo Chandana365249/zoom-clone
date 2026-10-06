@@ -1,6 +1,6 @@
 """Participant-session endpoints used from inside the meeting room."""
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Query, Response, status
 
 from app.dependencies import CurrentUser, DbSession
 from app.schemas import (
@@ -9,8 +9,11 @@ from app.schemas import (
     MeetingOut,
     ParticipantOut,
     RoomState,
+    SignalIn,
+    SignalOut,
 )
 from app.services import participants as participant_service
+from app.services import signaling as signaling_service
 
 router = APIRouter(prefix="/api/participants", tags=["participants"])
 
@@ -59,3 +62,17 @@ def remove_participant(
     target = participant_service.get_participant(db, participant_id)
     host = participant_service.require_host(db, target.meeting, data.host_participant_id, user)
     return participant_service.remove_participant(db, target, host)
+
+
+@router.post("/{participant_id}/signals", response_model=SignalOut, status_code=status.HTTP_201_CREATED)
+def send_signal(participant_id: int, data: SignalIn, db: DbSession):
+    """Relay a WebRTC offer/answer/ICE candidate to another participant in the same meeting."""
+    sender = participant_service.get_participant(db, participant_id)
+    return signaling_service.send_signal(db, sender, data)
+
+
+@router.get("/{participant_id}/signals", response_model=list[SignalOut])
+def fetch_signals(participant_id: int, db: DbSession, after: int = Query(default=0, ge=0)):
+    """Messages for this participant newer than `after`; older ones are acknowledged and deleted."""
+    recipient = participant_service.get_participant(db, participant_id)
+    return signaling_service.fetch_signals(db, recipient, after)

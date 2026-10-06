@@ -5,6 +5,7 @@ Schema overview:
     users 1 ──< auth_sessions  (one row per signed-in browser; deleted on logout)
     users 1 ──< meetings       (a user hosts many meetings)
     meetings 1 ──< participants (a meeting has many participant sessions)
+    participants 1 ──< signals  (WebRTC offer/answer/ICE messages relayed between two sessions)
     users 1 ──< participants    (optional: guests joining by link have no user row)
 
 All timestamps are stored as naive UTC in SQLite and returned as timezone-aware UTC.
@@ -87,6 +88,12 @@ class ParticipantStatus(str, enum.Enum):
     JOINED = "joined"
     LEFT = "left"
     REMOVED = "removed"  # removed by the host; cannot rejoin with the same session
+
+
+class SignalKind(str, enum.Enum):
+    OFFER = "offer"
+    ANSWER = "answer"
+    ICE = "ice"
 
 
 class TimestampMixin:
@@ -193,6 +200,36 @@ class Participant(TimestampMixin, Base):
 
     meeting: Mapped[Meeting] = relationship(back_populates="participants")
     user: Mapped[User | None] = relationship()
+
+
+class Signal(Base):
+    """A WebRTC signaling message from one participant session to another.
+
+    Browsers can't connect peer-to-peer until they've exchanged an SDP offer/answer and ICE
+    candidates. The server just relays these opaque JSON payloads; the audio/video itself then
+    flows directly between the browsers. Rows are deleted once the recipient acknowledges them.
+    """
+
+    __tablename__ = "signals"
+    __table_args__ = (
+        # Each recipient polls "my messages newer than the last one I saw".
+        Index("ix_signals_recipient_id", "recipient_id", "id"),
+        # Without AUTOINCREMENT, SQLite reuses ids of deleted rows. Delivered signals are deleted,
+        # so a new message could get an id *below* a client's cursor and be skipped. This makes
+        # ids strictly increasing, which the cursor-based delivery relies on.
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sender_id: Mapped[int] = mapped_column(
+        ForeignKey("participants.id", ondelete="CASCADE"), nullable=False
+    )
+    recipient_id: Mapped[int] = mapped_column(
+        ForeignKey("participants.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[SignalKind] = mapped_column(_enum_column(SignalKind, "signal_kind"), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now, nullable=False)
 
 
 # Number of people who have ever joined the meeting, computed in SQL alongside each meeting row

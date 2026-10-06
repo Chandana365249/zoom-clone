@@ -45,9 +45,25 @@ A Zoom-style meeting app for the Scaler SDE Fullstack assignment. You can sign u
 - **Settings page:** profile details, plus "join muted" and "join with video off" defaults that the pre-join screen uses.
 - Toast notifications, keyboard focus rings, accessible dialogs (native `<dialog>`), and support for reduced motion.
 
-### Honest scope note: audio and video between people
+### Live audio and video (WebRTC)
 
-Camera and microphone access is real: you see your own camera and the speaking indicator. **Audio and video are not sent between participants.** That needs WebRTC plus a signaling or SFU service, which could not be built reliably within this assignment. Other people's tiles show their avatar, name and mute status, all real and synced from the server. Nothing pretends to show remote video. The meeting-info popover in the room says this too. [WebRTC design](INTERVIEW_GUIDE.md#12-how-webrtc-would-be-added) explains how WebRTC would plug into the current design.
+Participants see and hear each other through **peer-to-peer WebRTC**:
+
+- **Mesh topology.** Every pair of participants has one `RTCPeerConnection`, so audio and video flow directly between browsers, not through our server.
+- **Signaling through our own API.** Offers, answers and ICE candidates are relayed by FastAPI (`/api/participants/{id}/signals`, stored briefly in a `signals` table). No extra service is needed.
+- **No glare.** The participant who joined later always makes the call, so two browsers never send offers to each other at the same time.
+- **Instant mute and camera changes.** Each connection has an audio and a video transceiver from the start. Toggling uses `replaceTrack`, with no reconnection.
+- **Network traversal:** Google's public STUN servers. Optionally a TURN relay via `NEXT_PUBLIC_TURN_URLS` / `NEXT_PUBLIC_TURN_USERNAME` / `NEXT_PUBLIC_TURN_CREDENTIAL`.
+
+Tested with real browser media (Chrome's fake camera and microphone, one Chrome process per participant, `e2e/media.mjs`):
+- Both directions of video and audio
+- Muting silences the audio on the other side
+- Camera off and on mid-call
+- A third participant receiving both other videos
+
+**Limits:**
+- A mesh suits small meetings (roughly 2–6 people); each person uploads one stream per other participant.
+- Without a TURN server, some strict networks (certain mobile carriers or corporate firewalls) can't connect. The tile then shows "can't connect" while presence and controls keep working.
 
 ---
 
@@ -68,6 +84,7 @@ Camera and microphone access is real: you see your own camera and the speaking i
 - The **frontend** talks to the backend only through `src/lib/api.ts`, a typed client that turns every failure into an `ApiError` with a readable message.
 - **Backend layers:** routers validate input with Pydantic and call a service. Services hold all the business rules and never import FastAPI. They raise domain errors, which `main.py` turns into consistent JSON (`{"detail", "code"}`).
 - **Authentication:** signing in returns a random session token. The browser keeps it in localStorage and sends it as `Authorization: Bearer <token>`. The server stores only the token's SHA-256 hash in `auth_sessions`, so signing out deletes the row and the token stops working immediately.
+- **Media** flows peer-to-peer over WebRTC. The API only relays the small signaling messages that set each connection up; the room polls `/participants/{id}/signals` about every 0.7 seconds.
 - **Live room sync** uses a **heartbeat poll** every 2 seconds. One request keeps the participant marked as connected and returns the whole room state (meeting, participant list, and the caller's own record). That is how a client finds out it was muted or removed, or that the meeting ended.
 
 ---
@@ -79,6 +96,7 @@ erDiagram
     users ||--o{ auth_sessions : "signs in with"
     users ||--o{ meetings : hosts
     meetings ||--o{ participants : has
+    participants ||--o{ signals : "sends / receives"
     users |o--o{ participants : "joins as (optional)"
 
     users {
@@ -127,6 +145,14 @@ erDiagram
         datetime created_at
         datetime updated_at
     }
+    signals {
+        int id PK "AUTOINCREMENT"
+        int sender_id FK
+        int recipient_id FK
+        enum kind "offer | answer | ice"
+        text payload "SDP or ICE candidate (JSON)"
+        datetime created_at
+    }
 ```
 
 Key decisions:
@@ -137,6 +163,7 @@ Key decisions:
 - **`user_id` is nullable.** Guests joining from a link don't have accounts, the way Zoom works. `ON DELETE SET NULL` keeps attendance history if a user is deleted.
 - **Statuses are enums stored as strings with CHECK constraints** (`native_enum=False`), so invalid values can't get in and the SQLite file stays easy to read.
 - **Indexes match the queries:** `(host_id, status, scheduled_start)` for the dashboard lists and `(meeting_id, status)` for "who is in this meeting right now".
+- **`signals` is a short-lived relay queue.** A client fetches "messages for me with id > the last one I saw", and anything at or below that cursor is deleted. The table uses `AUTOINCREMENT` on purpose: plain SQLite rowids are **reused** after deletes, which let a new offer get an id below a client's cursor and be skipped. There's a regression test for this.
 - **Foreign keys are enforced** with `PRAGMA foreign_keys=ON` (SQLite leaves them off by default). Deleting a meeting cascades to its participants.
 - **All times are stored in UTC.** A `UTCDateTime` column type rejects datetimes without a timezone and always returns aware UTC values. The browser shows them in local time.
 
@@ -168,6 +195,8 @@ Base URL: `http://localhost:8000`. Interactive docs are at **`/docs`** (Swagger 
 | POST | `/api/participants/{id}/leave` | Leave (the meeting ends when the last person leaves) |
 | POST | `/api/participants/{id}/mute` | Host: mute one participant 🔒 |
 | POST | `/api/participants/{id}/remove` | Host: remove a participant 🔒 |
+| POST | `/api/participants/{id}/signals` | Relay a WebRTC offer, answer or ICE candidate to another participant in the same meeting |
+| GET | `/api/participants/{id}/signals?after=N` | Signaling messages newer than `N`; older ones are acknowledged and deleted |
 
 🔒 = needs `Authorization: Bearer <token>`; without one the API returns `401 {"code": "unauthorized"}`.
 
@@ -205,7 +234,8 @@ zoom-clone/
 │       ├── hooks/             # useMeetings, useRoomState, useLocalMedia, useIsSpeaking…
 │       ├── providers/         # AuthProvider (session) + MeetingActions (dialogs and shared actions)
 │       └── lib/               # api.ts client, types, formatting, meeting helpers
-├── e2e/flow.mjs               # Browser end-to-end check (host + guest)
+├── e2e/flow.mjs               # Browser end-to-end check of all features (host + guests)
+├── e2e/media.mjs              # Checks audio/video really flow between participants (WebRTC)
 ├── backend/Procfile           # Start command used by Railway
 └── frontend/vercel.json       # Pins the Next.js framework preset on Vercel
 ```
@@ -259,14 +289,14 @@ Open http://localhost:3000 and click **Continue with demo account** (or create a
 ## Testing
 
 ```bash
-# Backend: 24 API tests (in-memory SQLite, a fresh DB per test)
+# Backend: 28 API tests (in-memory SQLite, a fresh DB per test)
 cd backend && pytest
 
 # Frontend: type check, lint, production build
 cd frontend && npx tsc --noEmit && npm run lint && npm run build
 
 # End-to-end: needs both servers running and Google Chrome installed
-cd e2e && npm install && node flow.mjs
+cd e2e && npm install && node flow.mjs && node media.mjs
 ```
 
 The backend tests cover sign-up/sign-in/sign-out (including token revocation, expired sessions, email normalisation, duplicate emails, and identical errors for unknown email vs wrong password), protected routes returning 401, users only seeing and changing their own meetings, guests joining without an account, host controls refusing a stolen host participant ID, unique codes and invite links, 404s, schedule validation (past start time, blank title, out-of-range duration, datetimes without a timezone), upcoming-list ordering, edit and delete, joining, participant lists and media state, the last person leaving ending the meeting, host-only permissions, mute-all, remove, end-for-all, and stale-session expiry.
@@ -330,7 +360,7 @@ Railway builds with Railpack. It detects Python from `requirements.txt` and `.py
 
 ## Limitations
 
-- No audio or video transport between participants (no WebRTC). See the scope note above.
+- Media uses a peer-to-peer mesh with STUN only. That's fine for small meetings, but large meetings need an SFU, and some strict networks need a TURN relay (configurable, not provided).
 - Auth is deliberately minimal: no email verification, password reset, sign-in rate limiting or OAuth. The token lives in localStorage, which is simple and works across domains but is readable by any script on the page; an HttpOnly cookie would be safer if the frontend and API shared a domain.
 - Participant sessions (heartbeat, own mute state, leave) are identified by their numeric ID without a separate secret, so a guest could in theory act on another guest's session by guessing it. Host controls are not affected, since they need the host's login.
 - Polling adds up to about 2 seconds of latency for remote changes. Without a heartbeat, presence takes up to 30 seconds to expire.
@@ -339,7 +369,7 @@ Railway builds with Railpack. It detects Python from `requirements.txt` and `.py
 
 ## Future improvements
 
-1. WebRTC media through an SFU (LiveKit or mediasoup), with signaling over WebSockets.
+1. An SFU (LiveKit or mediasoup) for larger meetings, a hosted TURN relay, and WebSocket signaling instead of polling.
 2. Server-push room updates (WebSockets or SSE) instead of polling.
 3. Password reset and email verification, OAuth sign-in, sign-in rate limiting, and meeting passcodes or a waiting room.
 4. Alembic migrations and PostgreSQL in production.

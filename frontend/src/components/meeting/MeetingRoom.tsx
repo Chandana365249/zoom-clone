@@ -10,6 +10,7 @@ import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { useIsSpeaking } from "@/hooks/useIsSpeaking";
 import { deviceErrorMessage, type LocalMedia } from "@/hooks/useLocalMedia";
 import { useNow } from "@/hooks/useNow";
+import { usePeerConnections } from "@/hooks/usePeerConnections";
 import { useRoomState } from "@/hooks/useRoomState";
 import { ApiError, api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -18,6 +19,7 @@ import type { Participant, RoomState } from "@/lib/types";
 import { ControlButton } from "./ControlButton";
 import { MeetingInfoPopover } from "./MeetingInfoPopover";
 import { ParticipantsPanel } from "./ParticipantsPanel";
+import { RemoteParticipantTile } from "./RemoteParticipantTile";
 import { VideoTile } from "./VideoTile";
 
 export type ExitReason = "left" | "removed" | "ended" | "ended-by-me";
@@ -62,6 +64,13 @@ export function MeetingRoom({ initial, media, onExit }: MeetingRoomProps) {
   const me = state.me;
   const isHost = me.role === "host";
   const isSpeaking = useIsSpeaking(media.audioStream, !media.isMuted);
+  const others = participants.filter((p) => p.id !== meId);
+  const { remoteStreams, statuses } = usePeerConnections({
+    meId,
+    peerIds: others.map((p) => p.id),
+    audioTrack: media.audioStream?.getAudioTracks()[0] ?? null,
+    videoTrack: media.videoStream?.getVideoTracks()[0] ?? null,
+  });
   const now = useNow(1000);
   const startedAt = meeting.started_at ? new Date(meeting.started_at).getTime() : null;
 
@@ -123,31 +132,6 @@ export function MeetingRoom({ initial, media, onExit }: MeetingRoomProps) {
     }
   }
 
-  // Your own tile first, then everyone else in join order (host first).
-  const tiles = [
-    {
-      key: meId,
-      name: me.display_name,
-      label: `${me.display_name} (You)`,
-      isSelf: true,
-      isMuted: media.isMuted,
-      isVideoOn: media.isVideoOn,
-      stream: media.videoStream,
-      isSpeaking,
-    },
-    ...participants
-      .filter((p) => p.id !== meId)
-      .map((p) => ({
-        key: p.id,
-        name: p.display_name,
-        label: p.role === "host" ? `${p.display_name} (Host)` : p.display_name,
-        isSelf: false,
-        isMuted: p.is_muted,
-        isVideoOn: false, // remote media isn't streamed in this build (no WebRTC); show their avatar
-        stream: null,
-        isSpeaking: false,
-      })),
-  ];
   // Reflect local media state in the participant list immediately, without waiting for a poll.
   const panelParticipants = participants.map((p) =>
     p.id === meId ? { ...p, is_muted: media.isMuted, is_video_on: media.isVideoOn } : p,
@@ -174,9 +158,24 @@ export function MeetingRoom({ initial, media, onExit }: MeetingRoomProps) {
 
       <div className="flex min-h-0 flex-1 gap-3 px-2 pb-2 sm:px-3">
         <main className="flex min-w-0 flex-1 overflow-y-auto">
-          <div className={cn("m-auto grid w-full gap-2 sm:gap-3", gridLayout(tiles.length))}>
-            {tiles.map(({ key, ...tile }) => (
-              <VideoTile key={key} {...tile} />
+          {/* Your own tile first, then everyone else in join order (host first). */}
+          <div className={cn("m-auto grid w-full gap-2 sm:gap-3", gridLayout(others.length + 1))}>
+            <VideoTile
+              name={me.display_name}
+              label={`${me.display_name} (You)`}
+              isSelf
+              isMuted={media.isMuted}
+              isVideoOn={media.isVideoOn}
+              stream={media.videoStream}
+              isSpeaking={isSpeaking}
+            />
+            {others.map((participant) => (
+              <RemoteParticipantTile
+                key={participant.id}
+                participant={participant}
+                stream={remoteStreams.get(participant.id)}
+                status={statuses.get(participant.id)}
+              />
             ))}
           </div>
         </main>

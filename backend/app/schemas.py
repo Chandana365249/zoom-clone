@@ -16,7 +16,7 @@ from pydantic import (
 )
 
 from app.config import settings
-from app.models import MeetingStatus, MeetingType, ParticipantRole, ParticipantStatus
+from app.models import MeetingStatus, MeetingType, ParticipantRole, ParticipantStatus, SignalKind
 
 MIN_DURATION_MINUTES = 15
 MAX_DURATION_MINUTES = 480
@@ -171,3 +171,20 @@ class RoomState(BaseModel):
     me: ParticipantOut
     meeting: MeetingOut
     participants: list[ParticipantOut]
+
+
+# ---------- WebRTC signaling ----------
+
+
+class SignalIn(BaseModel):
+    recipient_id: int
+    kind: SignalKind
+    # JSON-encoded RTCSessionDescription or RTCIceCandidate; opaque to the server.
+    payload: Annotated[str, Field(min_length=1, max_length=20_000)]
+
+
+class SignalOut(ORMModel):
+    id: int
+    sender_id: int
+    kind: SignalKind
+    payload: str
