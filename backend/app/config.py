@@ -18,6 +18,13 @@ class Settings:
     frontend_url: str
     cors_origins: list[str]
     seed_on_startup: bool
+    # TURN relay for WebRTC (see services/ice.py). Either Cloudflare (short-lived credentials)...
+    cloudflare_turn_key_id: str
+    cloudflare_turn_api_token: str
+    # ...or any provider's fixed credentials.
+    turn_urls: list[str]
+    turn_username: str
+    turn_credential: str
 
 
 def load_settings() -> Settings:
@@ -30,6 +37,11 @@ def load_settings() -> Settings:
             if origin.strip()
         ],
         seed_on_startup=_parse_bool(os.getenv("SEED_ON_STARTUP", "true")),
+        cloudflare_turn_key_id=os.getenv("CLOUDFLARE_TURN_KEY_ID", "").strip(),
+        cloudflare_turn_api_token=os.getenv("CLOUDFLARE_TURN_API_TOKEN", "").strip(),
+        turn_urls=[url.strip() for url in os.getenv("TURN_URLS", "").split(",") if url.strip()],
+        turn_username=os.getenv("TURN_USERNAME", "").strip(),
+        turn_credential=os.getenv("TURN_CREDENTIAL", "").strip(),
     )
 
 

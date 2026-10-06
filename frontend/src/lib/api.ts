@@ -125,7 +125,8 @@ export const api = {
     );
   },
 
-  // WebRTC signaling relay (see hooks/usePeerConnections.ts).
+  // WebRTC: STUN/TURN servers and the signaling relay (see hooks/usePeerConnections.ts).
+  getIceServers: () => request<{ ice_servers: RTCIceServer[] }>("/api/ice-servers"),
   sendSignal: (participantId: number, signal: { recipient_id: number; kind: SignalKind; payload: string }) =>
     post<Signal>(`/api/participants/${participantId}/signals`, signal),
   fetchSignals: (participantId: number, after: number) =>

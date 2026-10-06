@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app.errors import AppError
-from app.routers import auth, meetings, participants, users
+from app.routers import auth, ice, meetings, participants, users
 from app.seed import seed
 
 
@@ -67,3 +67,4 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(meetings.router)
 app.include_router(participants.router)
+app.include_router(ice.router)

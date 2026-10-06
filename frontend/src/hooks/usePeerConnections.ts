@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { loadIceServers } from "@/lib/ice";
 import type { Signal, SignalKind } from "@/lib/types";
 
 /**
@@ -14,6 +15,8 @@ import type { Signal, SignalKind } from "@/lib/types";
  *   which the room polls. Once connected, media flows browser-to-browser, not via our server.
  * - Every connection has one audio and one video transceiver from the start, so muting or
  *   turning the camera on/off is just `replaceTrack` — no renegotiation needed.
+ * - STUN/TURN servers come from the backend (lib/ice.ts); TURN relays media when the two
+ *   networks can't connect directly (mobile carriers, campus or corporate Wi-Fi).
  */
 
 const SIGNAL_POLL_MS = 700;
@@ -32,20 +35,6 @@ interface Peer {
   video: RTCRtpTransceiver | null;
   stream: MediaStream;
   pendingCandidates: RTCIceCandidateInit[];
-}
-
-/** STUN (Google's public servers) always; TURN only if configured via environment variables. */
-function iceServers(): RTCIceServer[] {
-  const servers: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
-  const turnUrls = process.env.NEXT_PUBLIC_TURN_URLS;
-  if (turnUrls) {
-    servers.push({
-      urls: turnUrls.split(",").map((url) => url.trim()),
-      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
-      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
-    });
-  }
-  return servers;
 }
 
 interface Options {
@@ -112,9 +101,11 @@ export function usePeerConnections({ meId, peerIds, videoOnIds, audioTrack, vide
   const startCallRef = useRef<(remoteId: number) => Promise<void>>(async () => undefined);
 
   const createPeer = useCallback(
-    (remoteId: number): Peer => {
+    async (remoteId: number): Promise<Peer> => {
       closePeer(remoteId);
-      const pc = new RTCPeerConnection({ iceServers: iceServers() });
+      const iceServers = await loadIceServers();
+      closePeer(remoteId); // in case another connection to this peer was made while waiting
+      const pc = new RTCPeerConnection({ iceServers });
       const peer: Peer = { pc, audio: null, video: null, stream: new MediaStream(), pendingCandidates: [] };
 
       pc.onicecandidate = (event) => {
@@ -144,7 +135,7 @@ export function usePeerConnections({ meId, peerIds, videoOnIds, audioTrack, vide
 
   const startCall = useCallback(
     async (remoteId: number) => {
-      const peer = createPeer(remoteId);
+      const peer = await createPeer(remoteId);
       peer.audio = peer.pc.addTransceiver("audio", { direction: "sendrecv" });
       peer.video = peer.pc.addTransceiver("video", { direction: "sendrecv" });
       await attachLocalTracks(peer);
@@ -170,7 +161,7 @@ export function usePeerConnections({ meId, peerIds, videoOnIds, audioTrack, vide
 
       if (signal.kind === "offer") {
         // A (re)call from a newer participant: always start from a fresh connection.
-        const peer = createPeer(from);
+        const peer = await createPeer(from);
         peer.pendingCandidates.push(...(earlyCandidates.current.get(from) ?? []));
         earlyCandidates.current.delete(from);
         await peer.pc.setRemoteDescription(payload);

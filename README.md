@@ -53,7 +53,10 @@ Participants see and hear each other through **peer-to-peer WebRTC**:
 - **Signaling through our own API.** Offers, answers and ICE candidates are relayed by FastAPI (`/api/participants/{id}/signals`, stored briefly in a `signals` table). No extra service is needed.
 - **No glare.** The participant who joined later always makes the call, so two browsers never send offers to each other at the same time.
 - **Instant mute and camera changes.** Each connection has an audio and a video transceiver from the start. Toggling uses `replaceTrack`, with no reconnection.
-- **Network traversal:** Google's public STUN servers. Optionally a TURN relay via `NEXT_PUBLIC_TURN_URLS` / `NEXT_PUBLIC_TURN_USERNAME` / `NEXT_PUBLIC_TURN_CREDENTIAL`.
+- **Network traversal:** browsers get their STUN/TURN servers from `GET /api/ice-servers`.
+  - **STUN** (Google, free) works when at least one side can be reached directly.
+  - **TURN** relays the media when it can't, which is common across mobile networks, campus Wi-Fi and corporate firewalls.
+  - TURN secrets stay on the server. With Cloudflare TURN (`CLOUDFLARE_TURN_KEY_ID`, `CLOUDFLARE_TURN_API_TOKEN`), the backend generates short-lived credentials and caches them for an hour. Any other provider's fixed credentials also work (`TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`).
 
 Tested with real browser media (Chrome's fake camera and microphone, one Chrome process per participant, `e2e/media.mjs`):
 - Both directions of video and audio
@@ -63,7 +66,7 @@ Tested with real browser media (Chrome's fake camera and microphone, one Chrome 
 
 **Limits:**
 - A mesh suits small meetings (roughly 2–6 people); each person uploads one stream per other participant.
-- Without a TURN server, some strict networks (certain mobile carriers or corporate firewalls) can't connect. The tile then shows "can't connect" while presence and controls keep working.
+- Without TURN configured, people on different restrictive networks can't connect. Their tile stays on "connecting…" / "can't connect", while presence and controls keep working. Configure one of the TURN options above to fix it.
 
 ---
 
@@ -289,7 +292,7 @@ Open http://localhost:3000 and click **Continue with demo account** (or create a
 ## Testing
 
 ```bash
-# Backend: 28 API tests (in-memory SQLite, a fresh DB per test)
+# Backend: 31 API tests (in-memory SQLite, a fresh DB per test)
 cd backend && pytest
 
 # Frontend: type check, lint, production build
@@ -360,7 +363,7 @@ Railway builds with Railpack. It detects Python from `requirements.txt` and `.py
 
 ## Limitations
 
-- Media uses a peer-to-peer mesh with STUN only. That's fine for small meetings, but large meetings need an SFU, and some strict networks need a TURN relay (configurable, not provided).
+- Media uses a peer-to-peer mesh with STUN only. That's fine for small meetings, but large meetings need an SFU, and calls across restrictive networks need the TURN relay configured (see Live audio and video).
 - Auth is deliberately minimal: no email verification, password reset, sign-in rate limiting or OAuth. The token lives in localStorage, which is simple and works across domains but is readable by any script on the page; an HttpOnly cookie would be safer if the frontend and API shared a domain.
 - Participant sessions (heartbeat, own mute state, leave) are identified by their numeric ID without a separate secret, so a guest could in theory act on another guest's session by guessing it. Host controls are not affected, since they need the host's login.
 - Polling adds up to about 2 seconds of latency for remote changes. Without a heartbeat, presence takes up to 30 seconds to expire.

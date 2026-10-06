@@ -2,7 +2,7 @@
 
 import { CalendarDays, CircleAlert, Copy, Mic, MicOff, Video, VideoOff } from "lucide-react";
 import Link from "next/link";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Spinner } from "@/components/ui/Spinner";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { useIsSpeaking } from "@/hooks/useIsSpeaking";
@@ -10,6 +10,7 @@ import { deviceErrorMessage, type LocalMedia } from "@/hooks/useLocalMedia";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { formatDuration, formatMeetingCode, formatRelativeDay, formatTime } from "@/lib/format";
+import { loadIceServers } from "@/lib/ice";
 import { meetingStart } from "@/lib/meeting";
 import type { JoinMeetingResult, Meeting } from "@/lib/types";
 import { VideoTile } from "./VideoTile";
@@ -31,6 +32,11 @@ export function PreJoin({ meeting, media, asHost, initialName, onJoined }: PreJo
   const [joining, setJoining] = useState(false);
   const isSpeaking = useIsSpeaking(media.audioStream, !media.isMuted);
   const start = meetingStart(meeting);
+
+  // Fetch STUN/TURN servers while the user checks their camera, so calls start faster.
+  useEffect(() => {
+    loadIceServers();
+  }, []);
   const deviceErrors = (["audio", "video"] as const)
     .filter((kind) => media.errors[kind])
     .map((kind) => deviceErrorMessage(kind, media.errors[kind]!));
