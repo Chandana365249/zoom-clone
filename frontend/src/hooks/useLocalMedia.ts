@@ -50,12 +50,19 @@ function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((track) => track.stop());
 }
 
+// How many times a camera that stops on its own is restarted before giving up.
+const MAX_VIDEO_RECOVERIES = 3;
+
 /**
  * Owns this browser's camera and microphone.
  *
  * Audio and video are requested separately so a missing/blocked camera doesn't also take
  * away the microphone. Muting disables the audio track; turning video off fully stops the
  * camera (so the camera light goes off). All tracks are released on unmount.
+ *
+ * If the camera stops by itself (unplugged, taken by another app, driver hiccup), the track
+ * fires "ended"; we restart it a few times, then fall back to "video off" so the UI and other
+ * participants never show a frozen camera.
  */
 export function useLocalMedia(initial: { muted: boolean; videoOn: boolean }) {
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
@@ -65,28 +72,90 @@ export function useLocalMedia(initial: { muted: boolean; videoOn: boolean }) {
   const [errors, setErrors] = useState<Partial<Record<DeviceKind, DeviceError>>>({});
   const streams = useRef<Record<DeviceKind, MediaStream | null>>({ audio: null, video: null });
   const initialRef = useRef(initial);
+  const videoRecoveries = useRef(0);
 
-  const setError = (kind: DeviceKind, error: DeviceError | undefined) =>
-    setErrors((current) => ({ ...current, [kind]: error }));
+  const setError = useCallback(
+    (kind: DeviceKind, error: DeviceError | undefined) => setErrors((current) => ({ ...current, [kind]: error })),
+    [],
+  );
 
-  // Acquire devices once on mount.
+  /** Makes `stream` the active camera stream and watches it for the camera stopping on its own. */
+  const installVideo = useCallback(
+    (stream: MediaStream) => {
+      function install(active: MediaStream) {
+        streams.current.video = active;
+        setVideoStream(active);
+        const track = active.getVideoTracks()[0];
+        if (!track) return;
+        // "ended" only fires when the source stops by itself — never for our own track.stop().
+        track.onended = async () => {
+          if (streams.current.video !== active) return; // already replaced or turned off
+          const giveUp = (error: DeviceError) => {
+            streams.current.video = null;
+            setVideoStream(null);
+            setIsVideoOn(false);
+            setError("video", error);
+          };
+          if (videoRecoveries.current >= MAX_VIDEO_RECOVERIES) return giveUp("failed");
+          videoRecoveries.current += 1;
+          try {
+            const fresh = await requestStream("video");
+            if (streams.current.video !== active) return stopStream(fresh); // user changed it meanwhile
+            install(fresh);
+          } catch (error) {
+            if (streams.current.video === active) giveUp(toDeviceError(error));
+          }
+        };
+      }
+      install(stream);
+    },
+    [setError],
+  );
+
+  // Acquire devices once on mount; release them on unmount.
+  //
+  // React Strict Mode (development) mounts, unmounts and immediately remounts components.
+  // Requesting the camera twice and stopping the first request at once can kill the device in
+  // some browsers, so the release is deferred by one tick: an immediate remount cancels it and
+  // keeps the devices, while a real unmount goes ahead and stops them.
+  const releaseTimer = useRef<number | null>(null);
+  const disposed = useRef(false);
+
   useEffect(() => {
-    let cancelled = false;
+    const release = () => {
+      releaseTimer.current = window.setTimeout(() => {
+        releaseTimer.current = null;
+        disposed.current = true;
+        stopStream(streams.current.audio);
+        stopStream(streams.current.video);
+        streams.current.audio = null;
+        streams.current.video = null;
+      }, 0);
+    };
+
+    if (releaseTimer.current !== null) {
+      // Remounted straight away (Strict Mode): keep what we already have or are acquiring.
+      window.clearTimeout(releaseTimer.current);
+      releaseTimer.current = null;
+      return release;
+    }
+
+    disposed.current = false;
     const { muted, videoOn } = initialRef.current;
 
     async function acquire(kind: DeviceKind) {
       try {
         const stream = await requestStream(kind);
-        if (cancelled) return stopStream(stream);
-        streams.current[kind] = stream;
+        if (disposed.current) return stopStream(stream); // unmounted while waiting
         if (kind === "audio") {
+          streams.current.audio = stream;
           stream.getAudioTracks().forEach((track) => (track.enabled = !muted));
           setAudioStream(stream);
         } else {
-          setVideoStream(stream);
+          installVideo(stream);
         }
       } catch (error) {
-        if (cancelled) return;
+        if (disposed.current) return;
         setError(kind, toDeviceError(error));
         if (kind === "audio") setIsMuted(true);
         else setIsVideoOn(false);
@@ -95,16 +164,8 @@ export function useLocalMedia(initial: { muted: boolean; videoOn: boolean }) {
 
     acquire("audio");
     if (videoOn) acquire("video");
-
-    const current = streams.current;
-    return () => {
-      cancelled = true;
-      stopStream(current.audio);
-      stopStream(current.video);
-      current.audio = null;
-      current.video = null;
-    };
-  }, []);
+    return release;
+  }, [installVideo, setError]);
 
   /** Returns the error if the change couldn't be applied (e.g. permission denied). */
   const setMuted = useCallback(async (muted: boolean): Promise<DeviceError | null> => {
@@ -122,7 +183,7 @@ export function useLocalMedia(initial: { muted: boolean; videoOn: boolean }) {
     streams.current.audio?.getAudioTracks().forEach((track) => (track.enabled = !muted));
     setIsMuted(muted);
     return null;
-  }, []);
+  }, [setError]);
 
   const setVideoOn = useCallback(async (on: boolean): Promise<DeviceError | null> => {
     if (!on) {
@@ -133,9 +194,11 @@ export function useLocalMedia(initial: { muted: boolean; videoOn: boolean }) {
       return null;
     }
     try {
-      stopStream(streams.current.video);
-      streams.current.video = await requestStream("video");
-      setVideoStream(streams.current.video);
+      const previous = streams.current.video;
+      streams.current.video = null; // so the old track's "ended" handler stands down
+      stopStream(previous);
+      installVideo(await requestStream("video"));
+      videoRecoveries.current = 0;
       setIsVideoOn(true);
       setError("video", undefined);
       return null;
@@ -144,7 +207,7 @@ export function useLocalMedia(initial: { muted: boolean; videoOn: boolean }) {
       setError("video", deviceError);
       return deviceError;
     }
-  }, []);
+  }, [installVideo, setError]);
 
   return { audioStream, videoStream, isMuted, isVideoOn, errors, setMuted, setVideoOn };
 }

@@ -242,7 +242,12 @@ UI states: every list has **loading** (skeleton rows), **empty** (illustration a
    - **IDs:** the table uses SQLite `AUTOINCREMENT`, so message ids never go backwards after deletions. Without it, a new offer could be skipped, and that was a real bug I found while testing with three people.
 5. **Tracks.** Every connection gets an audio and a video transceiver up front (`sendrecv`). Muting disables the mic track; turning the camera off or on swaps it with `sender.replaceTrack`, so there's no renegotiation.
 6. **Rendering.** Remote video goes into the tile's `<video>`. Remote audio plays through a separate hidden `<audio>`, so you still hear people whose camera is off. The green "speaking" border works for remote participants too, by analysing their incoming audio.
-7. **Recovery and cleanup.** If a connection fails, the caller retries after 2 seconds. Connections close when a participant leaves, and all of them close when you leave.
+7. **Recovery and cleanup.**
+   - If a connection fails, the caller retries after 2 seconds.
+   - **Video watchdog:** if someone's camera is on but no frames arrive for 8 seconds, their connection is re-established (at most once every 15 seconds).
+   - **Camera dropouts:** if your camera stops by itself (the track fires `ended`), `useLocalMedia` restarts it up to 3 times, then switches video off and tells the server, so nobody sees a frozen picture.
+   - **Strict Mode safety:** camera acquisition survives React's development double-mount. Release is deferred by one tick, so an immediate remount keeps the devices.
+   - Connections close when a participant leaves, and all of them close when you leave.
 8. **NAT traversal.** Google STUN by default; a TURN relay can be added through env vars.
 
 **How it would grow:**

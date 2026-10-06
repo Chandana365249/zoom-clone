@@ -1,7 +1,7 @@
 "use client";
 
 import { Link2, Mic, MicOff, PhoneOff, Users, Video, VideoOff, WifiOff } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { Menu } from "@/components/ui/Menu";
@@ -68,6 +68,7 @@ export function MeetingRoom({ initial, media, onExit }: MeetingRoomProps) {
   const { remoteStreams, statuses } = usePeerConnections({
     meId,
     peerIds: others.map((p) => p.id),
+    videoOnIds: others.filter((p) => p.is_video_on).map((p) => p.id),
     audioTrack: media.audioStream?.getAudioTracks()[0] ?? null,
     videoTrack: media.videoStream?.getVideoTracks()[0] ?? null,
   });
@@ -97,11 +98,22 @@ export function MeetingRoom({ initial, media, onExit }: MeetingRoomProps) {
   }
 
   async function toggleVideo() {
-    const on = !media.isVideoOn;
-    const error = await media.setVideoOn(on);
-    if (error) return toast.error(deviceErrorMessage("video", error));
-    syncMediaState({ is_video_on: on });
+    const error = await media.setVideoOn(!media.isVideoOn);
+    if (error) toast.error(deviceErrorMessage("video", error));
+    // The server is updated by the effect below, which also covers the camera stopping on its own.
   }
+
+  // Keep the server's video flag in step with the camera, whatever turned it on or off.
+  const lastSentVideo = useRef(initial.me.is_video_on);
+  const sendVideoState = useEffectEvent((on: boolean) => {
+    if (on === lastSentVideo.current) return;
+    lastSentVideo.current = on;
+    syncMediaState({ is_video_on: on });
+    if (!on && media.errors.video) toast.error(deviceErrorMessage("video", media.errors.video));
+  });
+  useEffect(() => {
+    sendVideoState(media.isVideoOn);
+  }, [media.isVideoOn]);
 
   async function runHostAction(action: () => Promise<unknown>, success: string) {
     try {

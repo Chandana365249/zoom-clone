@@ -55,6 +55,19 @@ async function remoteMedia(page) {
   });
 }
 
+/** Did this participant's own camera actually start? (Separates device problems from WebRTC ones.) */
+async function ownCameraLive(page, timeoutMs = 20000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const live = await page.evaluate(() =>
+      [...document.querySelectorAll("video")].some((v) => v.className.includes("-scale-x-100") && v.videoWidth > 0),
+    );
+    if (live) return true;
+    await page.waitForTimeout(300);
+  }
+  return false;
+}
+
 async function waitFor(page, predicate, timeoutMs = 20000) {
   const start = Date.now();
   let last;
@@ -80,11 +93,39 @@ try {
   await guest.locator("#prejoin-name").fill("Remote Guest");
   await guest.getByRole("button", { name: "Join", exact: true }).click();
   await guest.getByRole("button", { name: "Leave", exact: true }).waitFor();
+  const hostCam = await ownCameraLive(host);
+  const guestCam = await ownCameraLive(guest);
+  check("Both participants' own cameras started", hostCam && guestCam, `host ${hostCam}, guest ${guestCam}`);
 
   const hostSees = await waitFor(host, (m) => m.remoteVideoWidth > 0 && m.audioLevel > 0.01);
+  if (process.env.DIAG && hostSees.remoteVideoWidth === 0) {
+    const dump = (page) => page.evaluate(() => ({
+      tiles: [...document.querySelectorAll("main .truncate")].map((e) => e.textContent),
+      videos: [...document.querySelectorAll("video")].map((v) => ({
+        mirrored: v.className.includes("-scale-x-100"), w: v.videoWidth, paused: v.paused, ready: v.readyState,
+        tracks: (v.srcObject?.getTracks() ?? []).map((t) => `${t.kind}:${t.readyState}:${t.muted ? "muted" : "flowing"}`),
+      })),
+      audios: [...document.querySelectorAll("audio")].map((a) => (a.srcObject?.getTracks() ?? []).map((t) => `${t.kind}:${t.readyState}:${t.muted ? "muted" : "flowing"}`)),
+    }));
+    console.log("DIAG host:", JSON.stringify(await dump(host)));
+    console.log("DIAG guest:", JSON.stringify(await dump(guest)));
+  }
   check("Host receives guest's video", hostSees.remoteVideoWidth > 0, `${hostSees.remoteVideoWidth}px wide`);
   check("Host hears guest's audio", hostSees.audioPlaying && hostSees.audioLevel > 0.01, `level ${hostSees.audioLevel}`);
   const guestSees = await waitFor(guest, (m) => m.remoteVideoWidth > 0 && m.audioLevel > 0.01);
+  if (process.env.DIAG && guestSees.remoteVideoWidth === 0) {
+    const dump = (page) => page.evaluate(() => ({
+      tiles: [...document.querySelectorAll("main .truncate")].map((e) => e.textContent),
+      videos: [...document.querySelectorAll("video")].map((v) => ({
+        mirrored: v.className.includes("-scale-x-100"), w: v.videoWidth, paused: v.paused, ready: v.readyState,
+        tracks: (v.srcObject?.getTracks() ?? []).map((t) => `${t.kind}:${t.readyState}:${t.muted ? "muted" : "flowing"}`),
+      })),
+      audios: [...document.querySelectorAll("audio")].map((a) => (a.srcObject?.getTracks() ?? []).map((t) => `${t.kind}:${t.readyState}:${t.muted ? "muted" : "flowing"}`)),
+      buttons: [...document.querySelectorAll("footer button")].map((b) => b.textContent),
+    }));
+    console.log("DIAG(guest-side failure) host:", JSON.stringify(await dump(host)));
+    console.log("DIAG(guest-side failure) guest:", JSON.stringify(await dump(guest)));
+  }
   check("Guest receives host's video", guestSees.remoteVideoWidth > 0, `${guestSees.remoteVideoWidth}px wide`);
   check("Guest hears host's audio", guestSees.audioPlaying && guestSees.audioLevel > 0.01, `level ${guestSees.audioLevel}`);
   await host.screenshot({ path: `${OUT}/webrtc-host.png` });
@@ -105,6 +146,26 @@ try {
   const on = await waitFor(host, (m) => m.remoteVideoWidth > 0, 15000);
   check("Restarting video resumes the feed for others", on.remoteVideoWidth > 0, `${on.remoteVideoWidth}px wide`);
 
+  // The guest's camera stops on its own (like being unplugged): it should restart by itself
+  // and the host should keep receiving video.
+  const oldTrackId = await guest.evaluate(() => {
+    const self = [...document.querySelectorAll("video")].find((v) => v.className.includes("-scale-x-100"));
+    const track = self.srcObject.getVideoTracks()[0];
+    track.dispatchEvent(new Event("ended"));
+    return track.id;
+  });
+  let recoveredLocally = false;
+  for (let i = 0; i < 20 && !recoveredLocally; i++) {
+    await guest.waitForTimeout(500);
+    recoveredLocally = await guest.evaluate((oldId) => {
+      const self = [...document.querySelectorAll("video")].find((v) => v.className.includes("-scale-x-100"));
+      const track = self?.srcObject?.getVideoTracks()[0];
+      return Boolean(track && track.id !== oldId && track.readyState === "live" && self.videoWidth > 0);
+    }, oldTrackId);
+  }
+  const stillSeen = await waitFor(host, (m) => m.remoteVideoWidth > 0, 15000);
+  check("Camera that stops by itself restarts and keeps streaming", recoveredLocally && stillSeen.remoteVideoWidth > 0, `restarted ${recoveredLocally}, host sees ${stillSeen.remoteVideoWidth}px`);
+
   // A third person joins: everyone connects to everyone.
   const third = await newPage();
   await third.goto(`${BASE}/j/${code}`, { waitUntil: "networkidle" });
@@ -119,6 +180,17 @@ try {
     );
   }
   check("Third participant receives both other videos", thirdVideos === 2, `${thirdVideos} remote videos`);
+  if (process.env.DIAG && thirdVideos !== 2) {
+    const dump = (page) => page.evaluate(() => ({
+      tiles: [...document.querySelectorAll("main .truncate")].map((e) => e.textContent),
+      videos: [...document.querySelectorAll("video")].map((v) => ({
+        mirrored: v.className.includes("-scale-x-100"), w: v.videoWidth,
+        tracks: (v.srcObject?.getTracks() ?? []).map((t) => `${t.kind}:${t.readyState}:${t.muted ? "muted" : "flowing"}`),
+      })),
+      audios: [...document.querySelectorAll("audio")].map((a) => (a.srcObject?.getTracks() ?? []).map((t) => `${t.kind}:${t.readyState}:${t.muted ? "muted" : "flowing"}`)),
+    }));
+    for (const [name, page] of [["host", host], ["guest", guest], ["third", third]]) console.log(`DIAG3 ${name}:`, JSON.stringify(await dump(page)));
+  }
 
   await host.getByRole("button", { name: "End", exact: true }).click();
   await host.getByRole("menuitem", { name: "End meeting for all" }).click();

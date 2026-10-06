@@ -18,6 +18,11 @@ import type { Signal, SignalKind } from "@/lib/types";
 
 const SIGNAL_POLL_MS = 700;
 const RECONNECT_DELAY_MS = 2000;
+// Video watchdog: if someone's camera is on but no frames have arrived for this long, the
+// connection is re-established (at most once per cooldown per participant).
+const VIDEO_STALL_MS = 8000;
+const VIDEO_RECOVERY_COOLDOWN_MS = 15000;
+const WATCHDOG_INTERVAL_MS = 2000;
 
 export type PeerStatus = "connecting" | "connected" | "failed";
 
@@ -47,14 +52,17 @@ interface Options {
   meId: number;
   /** Ids of the other participants currently in the meeting (from the room state). */
   peerIds: number[];
+  /** Of those, the ones whose camera is on (so we expect video frames from them). */
+  videoOnIds: number[];
   audioTrack: MediaStreamTrack | null;
   videoTrack: MediaStreamTrack | null;
 }
 
-export function usePeerConnections({ meId, peerIds, audioTrack, videoTrack }: Options) {
+export function usePeerConnections({ meId, peerIds, videoOnIds, audioTrack, videoTrack }: Options) {
   const peers = useRef(new Map<number, Peer>());
   const knownIds = useRef(new Set<number>());
   const tracks = useRef({ audio: audioTrack, video: videoTrack });
+  const expectVideo = useRef(new Set(videoOnIds));
   // Outgoing signals are sent one after another so the server stores them in order: an ICE
   // candidate must never overtake the offer/answer it belongs to.
   const outbox = useRef<Promise<unknown>>(Promise.resolve());
@@ -243,6 +251,40 @@ export function usePeerConnections({ meId, peerIds, audioTrack, videoTrack }: Op
     }
     publish();
   }, [peerIdsKey, meId, startCall, closePeer, publish]);
+
+  // Video watchdog. Occasionally a connection comes up with audio flowing but one side's video
+  // never arriving (seen intermittently in testing). If a participant's camera is on but their
+  // video track has delivered no frames ("muted") for VIDEO_STALL_MS, call them again. The other
+  // side accepts any offer by starting a fresh connection, so either side may do this.
+  const videoOnKey = [...videoOnIds].sort((a, b) => a - b).join(",");
+  useEffect(() => {
+    expectVideo.current = new Set(videoOnKey ? videoOnKey.split(",").map(Number) : []);
+  }, [videoOnKey]);
+  useEffect(() => {
+    const stalledSince = new Map<number, number>();
+    const lastRecovery = new Map<number, number>();
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      for (const [id, peer] of peers.current) {
+        const video = peer.stream.getVideoTracks()[0];
+        const stalled =
+          peer.pc.connectionState === "connected" && expectVideo.current.has(id) && (!video || video.muted);
+        if (!stalled) {
+          stalledSince.delete(id);
+          continue;
+        }
+        if (!stalledSince.has(id)) stalledSince.set(id, now);
+        const waitedLongEnough = now - (stalledSince.get(id) ?? now) >= VIDEO_STALL_MS;
+        const cooledDown = now - (lastRecovery.get(id) ?? 0) >= VIDEO_RECOVERY_COOLDOWN_MS;
+        if (waitedLongEnough && cooledDown) {
+          lastRecovery.set(id, now);
+          stalledSince.delete(id);
+          startCall(id).catch(() => undefined);
+        }
+      }
+    }, WATCHDOG_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [startCall]);
 
   // Swap our outgoing tracks when the mic or camera changes (no renegotiation needed).
   useEffect(() => {
