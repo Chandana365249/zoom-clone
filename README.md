@@ -6,7 +6,8 @@ A Zoom-style meeting app for the Scaler SDE Fullstack assignment. You can sign u
 
 **Stack:** Next.js 16 (App Router, TypeScript, Tailwind CSS v4) · FastAPI · SQLAlchemy 2 · SQLite
 
-> Live demo: _add your Vercel URL here_ · API: _add your Render URL here_
+> **Live app: https://chandana-zoom-clone.vercel.app** (frontend on Vercel)
+> **API: https://api-production-39bb6.up.railway.app** (FastAPI on Railway, SQLite on a persistent volume) · [Swagger docs](https://api-production-39bb6.up.railway.app/docs)
 
 ---
 
@@ -205,7 +206,8 @@ zoom-clone/
 │       ├── providers/         # AuthProvider (session) + MeetingActions (dialogs and shared actions)
 │       └── lib/               # api.ts client, types, formatting, meeting helpers
 ├── e2e/flow.mjs               # Browser end-to-end check (host + guest)
-└── render.yaml                # Backend deployment blueprint
+├── backend/Procfile           # Start command used by Railway
+└── frontend/vercel.json       # Pins the Next.js framework preset on Vercel
 ```
 
 ---
@@ -275,11 +277,36 @@ The end-to-end script drives two real Chrome sessions (host and guest) with fake
 
 ## Deployment
 
-**Backend → Render.** `render.yaml` is a ready-made Blueprint. Create a new Blueprint from the repository and set `FRONTEND_URL` and `CORS_ORIGINS` to the Vercel URL. The start command is `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
+The live app runs on two services that talk over HTTPS:
 
-**Frontend → Vercel.** Import the repository, set **Root Directory** to `frontend`, and add `NEXT_PUBLIC_API_URL=https://<your-render-service>.onrender.com`.
+```
+Browser ──▶ Vercel (Next.js frontend) ──fetch──▶ Railway (FastAPI) ──▶ SQLite file on a Railway volume (/data)
+           chandana-zoom-clone.vercel.app        api-production-39bb6.up.railway.app
+```
 
-> On Render's free plan the filesystem is temporary, so the SQLite file resets when the service restarts or redeploys. `SEED_ON_STARTUP` re-seeds it so the demo always opens with data. For data that must last, attach a persistent disk or set `DATABASE_URL` to PostgreSQL; the SQLAlchemy code doesn't change.
+**Backend + database → Railway.**
+1. From `backend/`: `railway init`, then `railway add --service api`.
+2. Attach a persistent volume with `railway volume add --mount-path /data`. The SQLite file lives there, so data survives restarts and redeploys (checked: data and login sessions persisted across a restart).
+3. Set the variables:
+   - `DATABASE_URL=sqlite:////data/app.db`
+   - `SEED_ON_STARTUP=true`
+   - `FRONTEND_URL=<vercel url>`
+   - `CORS_ORIGINS=<vercel url>`
+4. Deploy with `railway up`, then run `railway domain` to get a public HTTPS URL.
+
+Railway builds with Railpack. It detects Python from `requirements.txt` and `.python-version`, and starts the app using `Procfile` (`uvicorn app.main:app --host 0.0.0.0 --port $PORT`). `.railwayignore` keeps the virtualenv, `.env` and local database out of the upload.
+
+**Frontend → Vercel.**
+1. From `frontend/`: `vercel link`.
+2. Set the API URL: `vercel env add NEXT_PUBLIC_API_URL production`, with the Railway URL as the value.
+3. Deploy: `vercel deploy --prod`.
+
+`NEXT_PUBLIC_*` variables are baked in at build time, so redeploy after changing it. If you import the repo in the Vercel dashboard instead, set **Root Directory** to `frontend`.
+
+> **Hosting notes:**
+> - Railway runs the API as a single instance, which SQLite needs: one process owns the file. Scaling out would mean moving to PostgreSQL by changing `DATABASE_URL`; the SQLAlchemy code doesn't change.
+> - The Railway account is on its free trial, so the backend keeps running while trial credit lasts. After that it needs a Railway plan.
+> - CORS allows only the two public Vercel addresses.
 
 ---
 

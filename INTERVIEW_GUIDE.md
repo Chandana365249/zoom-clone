@@ -23,7 +23,7 @@ components → hooks → lib/api.ts  ──HTTP──▶ routers → services �
                                  ◀─JSON──  (schemas validate input and shape output)
 ```
 
-- **Frontend and backend are separate apps** that talk only through a JSON REST API. They can be deployed separately (Vercel and Render).
+- **Frontend and backend are separate apps** that talk only through a JSON REST API. They are deployed separately: the frontend on Vercel, the API on Railway, and the SQLite file on a Railway persistent volume mounted at `/data`.
 - The frontend calls the network in **one place only**: `frontend/src/lib/api.ts`.
 - The backend has **three layers**:
   - **routers** handle HTTP.
@@ -209,7 +209,7 @@ UI states: every list has **loading** (skeleton rows), **empty** (illustration a
 1. **Polling vs WebSockets.** Polling is stateless, simple, works on any host, and doubles as presence detection. The cost is up to 2 seconds of latency and one request per participant every 2 seconds. That's fine for a demo. WebSockets come next.
 2. **Lazy cleanup vs a background job.** `expire_stale_sessions()` runs before reads that need fresh presence (lists, participants, heartbeat). No scheduler process is needed. The cost is a small write inside a GET request. A production system would use a periodic worker or a Redis key that expires.
 3. **Opaque session tokens instead of JWTs.** A random token with its hash in the database is simple, needs no extra library, and can be revoked instantly by deleting the row. The cost is one indexed lookup per request; JWTs avoid that lookup but are hard to revoke before they expire.
-4. **Bearer header instead of cookies.** The frontend (Vercel) and API (Render) are on different domains, where cookies run into third-party-cookie blocking and CSRF concerns. The trade-off is that a token in localStorage can be read by injected scripts (XSS); with a shared domain an HttpOnly cookie would be safer.
+4. **Bearer header instead of cookies.** The frontend (Vercel) and API (Railway) are on different domains, where cookies run into third-party-cookie blocking and CSRF concerns. The trade-off is that a token in localStorage can be read by injected scripts (XSS); with a shared domain an HttpOnly cookie would be safer.
 5. **The host is a role on a participant session, not just a user.** That models Zoom properly (co-hosts would be another role value) and lets controls check "is *this session* the host *of this meeting*".
 6. **Native `<dialog>` and the Popover API instead of a UI library.** You get accessibility, focus trapping and top-layer stacking with no extra dependencies.
 7. **Small dependency footprint.** The frontend's only runtime dependency beyond Next and React is `lucide-react`. The backend has five packages; auth uses only the standard library (`hashlib`, `secrets`, `hmac`).
@@ -247,6 +247,7 @@ UI states: every list has **loading** (skeleton rows), **empty** (illustration a
 - **Real-time fan-out:** WebSocket servers subscribe to Redis pub/sub channels per meeting, so any instance can push to any client.
 - **Media:** SFU clusters by region, and participants route to the nearest one. Media is the main cost and is separate from the API.
 - **Frontend:** static and edge-served by Vercel. Only meeting pages need data from the API.
+- **Today's deployment** is one Railway instance with SQLite on a volume. That is correct for SQLite (one writer process), but it's the first thing to change for scale: move to PostgreSQL, then run several API instances.
 
 ---
 
