@@ -318,7 +318,7 @@ Browser ──▶ Vercel (Next.js frontend) ──fetch──▶ Railway (FastAP
 1. From `backend/`: `railway init`, then `railway add --service api`.
 2. Attach a persistent volume with `railway volume add --mount-path /data`. The SQLite file lives there, so data survives restarts and redeploys (checked: data and login sessions persisted across a restart).
 3. Set the variables:
-   - `DATABASE_URL=sqlite:////data/app.db`
+   - `DATABASE_URL=sqlite:////data/zoom.db`
    - `SEED_ON_STARTUP=true`
    - `FRONTEND_URL=<vercel url>`
    - `CORS_ORIGINS=<vercel url>`
