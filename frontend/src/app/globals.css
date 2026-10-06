@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Tailwind v4 turns every --color-* / --font-* variable in @theme
+ * into utilities (e.g. bg-brand, text-ink-muted, bg-room-tile).
+ */
+@theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* Zoom blue */
+  --color-brand: #0b5cff;
+  --color-brand-hover: #0048d9;
+  --color-brand-active: #003cb8;
+  --color-brand-soft: #ebf1ff;
+
+  /* "New meeting" orange */
+  --color-accent: #ff6a1a;
+  --color-accent-hover: #f05a0a;
+
+  /* Light UI neutrals */
+  --color-ink: #131619;
+  --color-ink-muted: #5c6370;
+  --color-ink-subtle: #8a919c;
+  --color-line: #e3e6ea;
+  --color-line-strong: #d0d4da;
+  --color-surface: #ffffff;
+  --color-canvas: #f6f7f9;
+
+  --color-success: #12a150;
+  --color-danger: #e02828;
+  --color-danger-hover: #c41f1f;
+
+  /* Meeting room (dark) */
+  --color-room: #1a1a1a;
+  --color-room-bar: #232323;
+  --color-room-tile: #2e2e2e;
+  --color-room-raised: #383838;
+  --color-room-line: #3d3d3d;
+  --color-room-text: #f2f2f2;
+  --color-room-muted: #a6a6a6;
+  --color-speaking: #4ade80;
+
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.04), 0 1px 3px rgb(16 24 40 / 0.06);
+  --shadow-pop: 0 12px 32px -8px rgb(16 24 40 / 0.18), 0 4px 8px -4px rgb(16 24 40 / 0.08);
+
+  --animate-fade-in: fade-in 160ms ease-out;
+  --animate-pop-in: pop-in 180ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
+  --animate-slide-in-right: slide-in-right 220ms ease-out;
+  --animate-toast-in: toast-in 220ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pop-in {
+    from { opacity: 0; transform: translateY(6px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes slide-in-right {
+    from { opacity: 0; transform: translateX(16px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-canvas text-ink antialiased;
+  }
+
+  /* One consistent, visible focus ring for keyboard users across the app. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+
+  dialog::backdrop {
+    background: rgb(15 18 22 / 0.45);
+    backdrop-filter: blur(2px);
+    animation: fade-in 160ms ease-out;
+  }
+
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.6;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 1ms !important;
+      transition-duration: 1ms !important;
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "zoom-clone-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node flow.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

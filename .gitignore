@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/.venv/
+backend/.env
+backend/*.db
+
+# Node / Next.js (see also frontend/.gitignore)
+node_modules/
+e2e/screenshots/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
